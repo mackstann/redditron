@@ -6,11 +6,7 @@ import time
 from couchdb.client import Server, Database, ResourceConflict
 
 from comment import fetch_latest_comments, fetch_link_comments, flatten_comments
-
-def set_line(text):
-    '''Clear the line and output given text'''
-    sys.stdout.write('\x1b[2K\x1b[0G' + text)
-    sys.stdout.flush()
+from utils import set_line
 
 def store_comments(db, new_comments):
     comments = []
@@ -34,16 +30,16 @@ def collect_comments(db, new_comments):
     for doc in store_comments(db, new_comments):
         count += 1;
         
-    print "Collected %s comments." % count
+    print 'Collected %s comments.' % count
 
 def poll_collect(db, seconds):
     while True:
         collect_comments(db, fetch_latest_comments())
         
         for remaining in range(seconds, 0, -1):
-            set_line("Requesting comments again in %s seconds..." % remaining)
+            set_line('Requesting comments again in %s seconds...' % remaining)
             time.sleep(1)
-        set_line("")
+        set_line('')
 
 def get_db(server, db_name):
     try:
