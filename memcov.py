@@ -13,7 +13,7 @@ from urllib2 import urlopen
 chain_length = 25
 # chains of longer lengths are weighted more heavily when picking the
 # next follower. This list defines how heavily
-chain_weights = range(1, chain_length)
+chain_weights = range(1, chain_length+1)
 
 class LookBehind(object):
     def __init__(self, size, init=[]):
@@ -172,7 +172,6 @@ def token_predecessors(lb):
     >>> list(token_predecessors(lb))
     [[5], [4, 5], [3, 4, 5], [2, 3, 4, 5], [1, 2, 3, 4, 5]]
     """
-    [[1], [2, 1], [3, 2, 1], [4, 3, 2, 1], [5, 4, 3, 2, 1]]
     l = list(reversed(lb))
     for x in range(len(l)):
         yield l[-x-1:]
@@ -229,10 +228,10 @@ def get_reddit_comments(cache):
 
         time.sleep(35)
 
-def save_chains(cache):
-    """Continually get reddit comments and dump the resulting chains
-       into memcached"""
-    for cm in get_reddit_comments(cache):
+def save_chains(cache, it):
+    """Turn all of the strings yielded by `it' into chains and save
+       them to memcached"""
+    for cm in it:
         tokens = Token.tokenize(cm)
         followers = token_followers(tokens)
         hashed_followers = [(hash_tokens(f), tok)
@@ -276,8 +275,8 @@ def create_chain(cache):
         weights = {}
         for h, f_weights in cached_hashes.iteritems():
             for tok, weight in f_weights.iteritems():
-                weights[tok] = (weights.get(tok, 0) + weight
-                                * chain_weights[hashes[h]-1])
+                weights[tok] = (weights.get(tok, 0)
+                                + weight * chain_weights[hashes[h]-1])
 
         # now with the finished weights, build a list by duplicating
         # the items according to their weight. So given {a: 2, b: 3},
@@ -310,7 +309,8 @@ if __name__ == '__main__':
     cache = Client(memc)
 
     if op == 'save':
-        save_chains(cache)
+        comments = get_reddit_comments(cache)
+        save_chains(cache, comments)
     elif op == 'create':
         for x in limit(create_sentences(cache, 100), 100):
             print x
