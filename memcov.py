@@ -10,12 +10,17 @@ import simplejson as json
 from memcache import Client
 from urllib2 import urlopen
 
-chain_length = 20
+chain_length = 25
+# chains of longer lengths are weighted more heavily when picking the
+# next follower. This list defines how heavily
+chain_weights = range(1, chain_length)
 
 class LookBehind(object):
     def __init__(self, size, init=[]):
         self.size = size
-        self.data = list(itertools.islice(init, size))
+        self.data = []
+        for x in init:
+            self.data.append(x)
 
     def append(self, x):
         self.data.append(x)
@@ -62,6 +67,8 @@ class Token(object):
 
     @classmethod
     def tokenize(cls, text, beginend = True):
+        """Given a string of text, yield the non-whitespace tokens
+           parsed from it"""
         if beginend:
             yield BeginToken()
         for x in cls.split_re.split(text):
@@ -73,6 +80,8 @@ class Token(object):
 
     @classmethod
     def detokenize(cls, tokens):
+        """Given a stream of tokens, yield strings that look like
+           English sentences"""
         lookbehind = LookBehind(1)
 
         for tok in tokens:
@@ -124,6 +133,24 @@ def limit(it, lim=None):
     return itertools.islice(it, 0, lim)
 
 def token_followers(tokens):
+    """Given a list of tokens, yield tuples of lists of tokens (up to
+       chain_length) and the tokens that follow them. e.g.:
+
+       >>> list(token_followers([1,2,3,4,5]))
+       [([1], 2),
+        ([2], 3),
+        ([1, 2], 3),
+        ([3], 4),
+        ([2, 3], 4),
+        ([1, 2, 3], 4),
+        ([4], 5),
+        ([3, 4], 5),
+        ([2, 3, 4], 5),
+        ([1, 2, 3, 4], 5)]
+    """
+    # TODO: we could generate SkipTokens too to match 'i really like
+    # bacon' to 'i don't like bacon'. At the loss of some accuracy we
+    # could even match 'i like bacon' to 'i don't really like bacon'
     lookbehind = LookBehind(chain_length)
     for token in tokens:
         if lookbehind:
@@ -133,21 +160,36 @@ def token_followers(tokens):
         lookbehind.append(token)
 
 def token_predecessors(lb):
+    """Given a LookBehind buffer, yield all of the sequences of the
+       last N items, e.g.
+
+    >>> lb = LookBehind(5)
+    >>> lb.append(1)
+    >>> lb.append(2)
+    >>> lb.append(3)
+    >>> lb.append(4)
+    >>> lb.append(5)
+    >>> list(token_predecessors(lb))
+    [[5], [4, 5], [3, 4, 5], [2, 3, 4, 5], [1, 2, 3, 4, 5]]
+    """
+    [[1], [2, 1], [3, 2, 1], [4, 3, 2, 1], [5, 4, 3, 2, 1]]
     l = list(reversed(lb))
     for x in range(len(l)):
         yield l[-x-1:]
 
 def hash_tokens(tokens):
-    return "%d_%d" % (crc32(''.join(tok.tok.encode('utf8')
-                                    for tok in tokens)),
-                      len(tokens))
+    return str(crc32(''.join(tok.tok.encode('utf8')
+                             for tok in tokens)))
 
 def sum_dicts(d1, d2):
-    keys = set(d1.keys() + d2.keys())
-    return dict((k, d1.get(k, 0) + d2.get(k, 0))
-                for k in keys)
+    ret = {}
+    for d in d1, d2:
+        for k, v in d.iteritems():
+            ret[k] = ret.get(k, 0) + v
+    return ret
 
 def get_reddit_comments(cache):
+    """Continually yield new comment-bodies from reddit.com"""
     url = 'http://www.reddit.com/comments.json?limit=100'
 
     def _seen_key(i):
@@ -185,16 +227,14 @@ def get_reddit_comments(cache):
             cache.set_multi(dict((_seen_key(k), True)
                                  for k in new))
 
-        print 'sleeping'
         time.sleep(35)
 
 def save_chains(cache):
+    """Continually get reddit comments and dump the resulting chains
+       into memcached"""
     for cm in get_reddit_comments(cache):
-        print 'making tokens for len==%d' % len(cm)
-        tokens = list(Token.tokenize(cm))
-        print 'making followers for %d tokens' % len(tokens)
-        followers = list(token_followers(tokens))
-        print 'made %d followers' % len(followers)
+        tokens = Token.tokenize(cm)
+        followers = token_followers(tokens)
         hashed_followers = [(hash_tokens(f), tok)
                             for (f, tok)
                             in followers]
@@ -213,25 +253,40 @@ def save_chains(cache):
             cache.set_multi(cached_hashes)
 
 def create_chain(cache):
+    """Read the chains created by save_chains from memcached and yield
+       a stream of predicted tokens"""
     lb = LookBehind(chain_length, [BeginToken()])
 
     while True:
-        preds = token_predecessors(lb)
-        hashes = map(hash_tokens, preds)
-        cached_hashes = cache.get_multi(hashes)
-        # TODO: we should add some weighting in here instead of
-        # considering them all equal
-        candidates = reduce(lambda x,y: x.union(y),
-                            (set(hs.keys())
-                             for hs
-                             in cached_hashes.values()),
-                            set())
-        candidates = list(candidates)
+        preds = list(token_predecessors(lb))
+        hashes = dict((hash_tokens(x), len(x))
+                      for x in preds)
+        # dict(hash -> dict(follower -> weight))
+        cached_hashes = cache.get_multi(hashes.keys())
 
-        if not candidates:
+        if not cached_hashes:
+            # no idea what the next token should be. This should only
+            # happen if the storage backend has dumped the list of
+            # followers for the previous token (since if it has no
+            # followers, it would at least have an EndToken follower)
             break
 
-        next = random.choice(candidates)
+        # build up the weights for the next token based on
+        # occurrence-counts in the source data * the length weight
+        weights = {}
+        for h, f_weights in cached_hashes.iteritems():
+            for tok, weight in f_weights.iteritems():
+                weights[tok] = (weights.get(tok, 0) + weight
+                                * chain_weights[hashes[h]-1])
+
+        # now with the finished weights, build a list by duplicating
+        # the items according to their weight. So given {a: 2, b: 3},
+        # generate the list [a, a, b, b, b]
+        weighted_list = []
+        for tok, weight in weights.iteritems():
+            weighted_list.extend([tok] * weight)
+
+        next = random.choice(weighted_list)
 
         if next == EndToken.tok:
             break
@@ -242,6 +297,8 @@ def create_chain(cache):
         lb.append(token)
 
 def create_sentences(cache, length):
+    """Create chains with create_chain and yield lines that look like
+       English sentences"""
     while True:
         chain = limit(create_chain(cache), length)
         yield ''.join(Token.detokenize(chain))
