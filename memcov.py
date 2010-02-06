@@ -332,7 +332,7 @@ def create_chain(cache):
             weighted_list.extend([tok] * weight)
 
         next = random.choice(weighted_list)
-x
+
         if next == EndToken.tok:
             break
 
