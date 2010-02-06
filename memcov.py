@@ -80,6 +80,14 @@ class Token(object):
         if beginend:
             yield EndToken()
 
+    def __repr__(self):
+        return "Token(%r, %r)" % (self.tok, self.kind)
+
+    def __eq__(self, other):
+        return (isinstance(other, Token)
+                and (self.tok, other.type) == (other.tok, other.type))
+
+
     @classmethod
     def detokenize(cls, tokens):
         """Given a stream of tokens, yield strings that look like
@@ -105,9 +113,6 @@ class Token(object):
             yield text
 
             lookbehind.append(tok)
-
-    def __repr__(self):
-        return "Token(%r, %r)" % (self.tok, self.kind)
 
 class BeginToken(Token):
     tok = '\01'
@@ -304,11 +309,12 @@ def create_sentences(cache, length):
         chain = limit(create_chain(cache), length)
         yield ''.join(Token.detokenize(chain))
 
-def main(memc):
+def main(memc, lim = None):
     cache = Cache(memc)
+    lim = int(lim)
 
     try:
-        for x in create_sentences(cache, 100):
+        for x in limit(create_sentences(cache, 100), lim):
             print x
     except KeyboardInterrupt:
         pass
