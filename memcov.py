@@ -15,6 +15,10 @@ chain_length = 25
 # next follower. This list defines how heavily
 chain_weights = range(1, chain_length+1)
 
+class Cache(Client):
+    def __init__(self, iden):
+        Client.__init__(self, iden.split(','))
+
 class LookBehind(object):
     def __init__(self, size, init=[]):
         self.size = size
@@ -50,7 +54,8 @@ class Token(object):
     types = dict(punc = re.compile(r'[?,!;:.()]').match,
                  word = re.compile(r'[A-Za-z0-9\'-]+').match,
                  whitespace = re.compile(r'|\s+').match)
-    # must keep the splitter in sync with the types
+    # must keep the splitter in sync with the types. None of these can
+    # include pipes because we use them as a meta-character
     split_re = re.compile(r'(\s+|[A-Za-z0-9\'-]+|[?,!;:.()])')
     capnexts = '?!.'
     nospaces_after = '('
@@ -180,13 +185,6 @@ def hash_tokens(tokens):
     return str(crc32(''.join(tok.tok.encode('utf8')
                              for tok in tokens)))
 
-def sum_dicts(d1, d2):
-    ret = {}
-    for d in d1, d2:
-        for k, v in d.iteritems():
-            ret[k] = ret.get(k, 0) + v
-    return ret
-
 def get_reddit_comments(cache):
     """Continually yield new comment-bodies from reddit.com"""
     url = 'http://www.reddit.com/comments.json?limit=100'
@@ -228,28 +226,70 @@ def get_reddit_comments(cache):
 
         time.sleep(35)
 
+def _followers(cache, h):
+    c = cache.get(h) or ''
+    s = c or ''
+    l = c.split('|')
+    l = filter(None, l)
+    return l
+
+def _count_key(h, follower):
+    return "%s_%s" % (h, crc32(follower))
+
+def get_followers(cache, h):
+    """Given a hash of a token or set of tokens, return a dict of all
+       potential followers and their weights"""
+    followers = _followers(cache, h)
+    weight_keys = dict((_count_key(h, f), f)
+                       for f in followers)
+    weight_vals = cache.get_multi(weight_keys.keys())
+    weights = dict((weight_keys[x], weight_vals[x])
+                   for x in weight_vals
+                   if weight_keys[x] > 0)
+    return weights
+
+def cleanup_counts(cache, followers_key):
+    """To store the followers in memcached, we store one key
+       containing a list of all of the followers, and then a key for
+       each follower. This function deduplicates the list of followers
+       and removes entries for which memcached has dropped the key
+       containing the count"""
+
+    # TODO: it's possible to create items that are too big to store in
+    # memcached (an obvious example is the followers of a
+    # BeginToken()). We should also trim down the size while we're
+    # cleaning this up
+
+    followers = _followers(cache, followers_key)
+    followers = set(followers)
+    count_keys = [_count_key(followers_key, x)
+                  for x in followers]
+    existing_followers = cache.get_multi(count_keys)
+    existing_followers = [x for x in followers
+                          if existing_followers.get(_count_key(followers_key, x), 0) > 0]
+    if existing_followers:
+        cache.set(followers_key, '|'.join(existing_followers))
+    else:
+        cache.delete(followers_key)
+
 def save_chains(cache, it):
     """Turn all of the strings yielded by `it' into chains and save
        them to memcached"""
     for cm in it:
         tokens = Token.tokenize(cm)
         followers = token_followers(tokens)
-        hashed_followers = [(hash_tokens(f), tok)
-                            for (f, tok)
-                            in followers]
-        if hashed_followers:
-            hashes = map(lambda x: x[0], hashed_followers)
-            cached_hashes = cache.get_multi(hashes)
-            for h, tok in hashed_followers:
-                text = tok.tok
+        for preds, token in followers:
+            text = token.tok.encode('utf8')
+            followers_key = hash_tokens(preds)
+            count_key = _count_key(followers_key, text)
 
-                for_hash = cached_hashes.setdefault(h, {})
-                for_hash[text] = for_hash.get(text, 0) + 1
+            cache.add(followers_key, '')
+            cache.append(followers_key, '|%s' % (text,))
+            cache.add(count_key, 0)
+            cache.incr(count_key)
 
-            # TODO: it's possible to create items that are too big to
-            # store in memcached (an obvious example is the followers
-            # of a BeginToken()). We should trim those before storing
-            cache.set_multi(cached_hashes)
+            if random.randint(0, 100) == 0:
+                cleanup_counts(cache, followers_key)
 
 def create_chain(cache):
     """Read the chains created by save_chains from memcached and yield
@@ -261,7 +301,9 @@ def create_chain(cache):
         hashes = dict((hash_tokens(x), len(x))
                       for x in preds)
         # dict(hash -> dict(follower -> weight))
-        cached_hashes = cache.get_multi(hashes.keys())
+        #cached_hashes = cache.get_multi(hashes.keys())
+        cached_hashes = dict((h, get_followers(cache, h))
+                             for h in hashes)
 
         if not cached_hashes:
             # no idea what the next token should be. This should only
@@ -304,9 +346,8 @@ def create_sentences(cache, length):
 
 if __name__ == '__main__':
     memc, op = sys.argv[1:]
-    memc = memc.split(',')
 
-    cache = Client(memc)
+    cache = Cache(memc)
 
     if op == 'save':
         comments = get_reddit_comments(cache)
