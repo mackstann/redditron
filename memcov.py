@@ -216,11 +216,6 @@ def cleanup_counts(cache, followers_key):
        and removes entries for which memcached has dropped the key
        containing the count"""
 
-    # TODO: it's possible to create items that are too big to store in
-    # memcached (an obvious example is the followers of a
-    # BeginToken()). We should also trim down the size while we're
-    # cleaning this up
-
     followers = _followers(cache, followers_key)
     followers = set(followers)
     count_keys = [_count_key(followers_key, x)
@@ -228,8 +223,9 @@ def cleanup_counts(cache, followers_key):
     existing_followers = cache.get_multi(count_keys)
     existing_followers = [x for x in followers
                           if existing_followers.get(_count_key(followers_key, x), 0) > 0]
+    random.shuffle(existing_followers)
     if existing_followers:
-        cache.set(followers_key, '|'.join(existing_followers))
+        cache.set(followers_key, '|'.join(existing_followers)[:(1024*1024-1)])
     else:
         cache.delete(followers_key)
 

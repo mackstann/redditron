@@ -1,9 +1,13 @@
+#!/usr/bin/env python
+
 import sys
 import time
 
 import twitter
 
 from memcov import Cache, save_chains, create_sentences, limit
+
+MAX_LENGTH = 140
 
 def get_twitter_status(cache, api):
     def _seen_key(i):
@@ -48,11 +52,12 @@ def main(memc, op, username = '', password = ''):
         save_chains(cache, status)
     elif op == 'tweet':
         for x in create_sentences(cache, 100):
-            x = x.encode('utf-8')[:140] # twitter's length-limit
-            print 'tweeting: %r' % x
-            api.PostUpdate(x)
+            x = x.encode('utf-8')[:MAX_LENGTH].strip()
+            if x:
+                print 'tweeting: %r' % x
+                api.PostUpdate(x)
 
-            time.sleep(60) # post one per minute
+                time.sleep(5*60) # post one per minute
 
     else:
         raise ValueError('unkown op %r?' % op)
