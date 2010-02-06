@@ -304,6 +304,10 @@ def create_chain(cache):
         #cached_hashes = cache.get_multi(hashes.keys())
         cached_hashes = dict((h, get_followers(cache, h))
                              for h in hashes)
+        # remove the hashes with no followers
+        cached_hashes = dict((h, fs) for (h, fs)
+                             in cached_hashes.iteritems()
+                             if fs)
 
         if not cached_hashes:
             # no idea what the next token should be. This should only
@@ -328,7 +332,7 @@ def create_chain(cache):
             weighted_list.extend([tok] * weight)
 
         next = random.choice(weighted_list)
-
+x
         if next == EndToken.tok:
             break
 
@@ -353,5 +357,8 @@ if __name__ == '__main__':
         comments = get_reddit_comments(cache)
         save_chains(cache, comments)
     elif op == 'create':
-        for x in limit(create_sentences(cache, 100), 100):
-            print x
+        try:
+            for x in create_sentences(cache, 100):
+                print x
+        except KeyboardInterrupt:
+            pass
