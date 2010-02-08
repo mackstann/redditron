@@ -12,6 +12,10 @@ chain_length = 7
 # next follower. This list defines how heavily
 chain_weights = range(1, chain_length+1)
 
+# whether to append EndTokens to the end of token streams. Not doing
+# so biases for longer comments
+endtokens = False
+
 class Cache(Client):
     def __init__(self, iden):
         Client.__init__(self, iden.split(','))
@@ -77,7 +81,7 @@ class Token(object):
             tok = cls(x)
             if tok.kind != 'whitespace':
                 yield tok
-        if beginend:
+        if beginend and endtokens:
             yield EndToken()
 
     def __repr__(self):
