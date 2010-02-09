@@ -7,7 +7,7 @@ import itertools
 from zlib import crc32
 from memcache import Client
 
-chain_length = 7
+chain_length = 5
 # chains of longer lengths are weighted more heavily when picking the
 # next follower. This list defines how heavily
 chain_weights = range(1, chain_length+1)
