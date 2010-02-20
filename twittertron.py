@@ -52,8 +52,8 @@ def main(memc, op, username = '', password = ''):
         save_chains(cache, status)
     elif op == 'tweet':
         for x in create_sentences(cache, 100):
-            x = x.encode('utf-8')[:MAX_LENGTH].strip()
-            if x:
+            x = x.encode('utf-8').strip()
+            if x and len(x) <= MAX_LENGTH:
                 print 'tweeting: %r' % x
                 api.PostUpdate(x)
 
